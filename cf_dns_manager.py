@@ -11,35 +11,56 @@ load_dotenv()
 
 # --- Configuration ---
 CF_EMAIL = os.getenv("CF_EMAIL")
-CF_API_KEY = os.getenv("CF_API_KEY")
-CF_DOMAIN = os.getenv("CF_DOMAIN")
+CF_GLOBAL_API_KEY = os.getenv("CF_GLOBAL_API_KEY")
 
 # --- Cloudflare API Setup ---
 API_BASE_URL = "https://api.cloudflare.com/client/v4"
 HEADERS = {
     "X-Auth-Email": CF_EMAIL,
-    "X-Auth-Key": CF_API_KEY,
+    "X-Auth-Key": CF_GLOBAL_API_KEY,
     "Content-Type": "application/json"
 }
 
 # --- Rich Console ---
 console = Console()
 
-def get_zone_id(domain):
-    """Get the Zone ID for a given domain."""
-    url = f"{API_BASE_URL}/zones?name={domain}"
+def get_all_zones():
+    """Get all zones (domains) from the Cloudflare account."""
+    url = f"{API_BASE_URL}/zones"
     try:
         response = requests.get(url, headers=HEADERS)
         response.raise_for_status()
         data = response.json()
         if data["result"]:
-            return data["result"][0]["id"]
+            return data["result"]
         else:
-            console.print(f"[bold red]Error: Domain '{domain}' not found in your Cloudflare account.[/bold red]")
+            console.print(f"[bold red]Error: No domains found in your Cloudflare account.[/bold red]")
             sys.exit(1)
     except requests.exceptions.RequestException as e:
         console.print(f"[bold red]API Request Error: {e}[/bold red]")
         sys.exit(1)
+
+def select_zone(zones):
+    """Display a list of zones and prompt the user to select one."""
+    table = Table(title="Select a Domain to Manage")
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("Domain", style="green")
+
+    for i, zone in enumerate(zones):
+        table.add_row(str(i + 1), zone["name"])
+    
+    console.print(table)
+    
+    while True:
+        try:
+            choice = int(console.input("Enter the number of the domain you want to manage: "))
+            if 1 <= choice <= len(zones):
+                return zones[choice - 1]
+            else:
+                console.print("[bold red]Invalid choice. Please try again.[/bold red]")
+        except ValueError:
+            console.print("[bold red]Invalid input. Please enter a number.[/bold red]")
+
 
 def get_dns_records(zone_id):
     """Get all DNS records for a given Zone ID."""
@@ -52,9 +73,9 @@ def get_dns_records(zone_id):
         console.print(f"[bold red]API Request Error: {e}[/bold red]")
         return []
 
-def display_dns_records(records):
+def display_dns_records(records, domain):
     """Display DNS records in a formatted table."""
-    table = Table(title=f"DNS Records for {CF_DOMAIN}")
+    table = Table(title=f"DNS Records for {domain}")
     table.add_column("ID", style="cyan", no_wrap=True)
     table.add_column("Type", style="magenta")
     table.add_column("Name", style="green")
@@ -75,11 +96,11 @@ def display_dns_records(records):
         )
     console.print(table)
 
-def add_dns_record(zone_id):
+def add_dns_record(zone_id, domain):
     """Add a new DNS record."""
     console.print("\n[bold]Add a new DNS Record[/bold]")
     record_type = console.input("Enter record type (A, AAAA, CNAME, TXT, etc.): ").upper()
-    name = console.input(f"Enter name (e.g., 'subdomain' for subdomain.{CF_DOMAIN}): ")
+    name = console.input(f"Enter name (e.g., 'subdomain' for subdomain.{domain}): ")
     content = console.input("Enter content (e.g., IP address or another domain): ")
     ttl_str = console.input("Enter TTL (in seconds, 1 for auto): ")
     ttl = int(ttl_str) if ttl_str else 1
@@ -109,9 +130,9 @@ def add_dns_record(zone_id):
         console.print(f"[bold red]Error adding DNS record: {error_message}[/bold red]")
 
 
-def update_dns_record(zone_id, records):
+def update_dns_record(zone_id, records, domain):
     """Update an existing DNS record."""
-    display_dns_records(records)
+    display_dns_records(records, domain)
     record_id = console.input("\nEnter the ID of the record to update: ")
 
     # Find the record to pre-fill information
@@ -157,9 +178,9 @@ def update_dns_record(zone_id, records):
         error_message = e.response.json()["errors"][0]["message"]
         console.print(f"[bold red]Error updating DNS record: {error_message}[/bold red]")
 
-def delete_dns_record(zone_id, records):
+def delete_dns_record(zone_id, records, domain):
     """Delete a DNS record."""
-    display_dns_records(records)
+    display_dns_records(records, domain)
     record_id = console.input("\nEnter the ID of the record to delete: ")
 
     if not any(r['id'] == record_id for r in records):
@@ -180,36 +201,45 @@ def delete_dns_record(zone_id, records):
 
 def main():
     """Main function to run the CLI tool."""
-    if not all([CF_EMAIL, CF_API_KEY, CF_DOMAIN]):
-        console.print("[bold red]Error: Missing credentials. Make sure CF_EMAIL, CF_API_KEY, and CF_DOMAIN are set in your .env file.[/bold red]")
+    if not all([CF_EMAIL, CF_GLOBAL_API_KEY]):
+        console.print("[bold red]Error: Missing credentials. Make sure CF_EMAIL and CF_GLOBAL_API_KEY are set in your .env file.[/bold red]")
         sys.exit(1)
 
-    zone_id = get_zone_id(CF_DOMAIN)
+    zones = get_all_zones()
+    selected_zone = select_zone(zones)
+    zone_id = selected_zone["id"]
+    domain = selected_zone["name"]
     
     while True:
-        console.print("\n[bold cyan]Cloudflare DNS Manager[/bold cyan]")
+        console.print(f"\n[bold cyan]Cloudflare DNS Manager for {domain}[/bold cyan]")
         console.print("1. List DNS Records")
         console.print("2. Add DNS Record")
         console.print("3. Update DNS Record")
         console.print("4. Delete DNS Record")
-        console.print("5. Exit")
+        console.print("5. Select Another Domain")
+        console.print("6. Exit")
         choice = console.input("Enter your choice: ")
 
         if choice == '1':
             records = get_dns_records(zone_id)
             if records:
-                display_dns_records(records)
+                display_dns_records(records, domain)
         elif choice == '2':
-            add_dns_record(zone_id)
+            add_dns_record(zone_id, domain)
         elif choice == '3':
             records = get_dns_records(zone_id)
             if records:
-                update_dns_record(zone_id, records)
+                update_dns_record(zone_id, records, domain)
         elif choice == '4':
             records = get_dns_records(zone_id)
             if records:
-                delete_dns_record(zone_id, records)
+                delete_dns_record(zone_id, records, domain)
         elif choice == '5':
+            zones = get_all_zones()
+            selected_zone = select_zone(zones)
+            zone_id = selected_zone["id"]
+            domain = selected_zone["name"]
+        elif choice == '6':
             console.print("Exiting.")
             break
         else:
